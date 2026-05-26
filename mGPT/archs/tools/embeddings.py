@@ -127,7 +127,7 @@ class Embeddings(nn.Module):
                 self.scale_factor = math.sqrt(self.embedding_dim)
 
         if freeze:
-            freeze_params(self)
+            self.freeze()
 
     # pylint: disable=arguments-differ
     def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
@@ -212,7 +212,7 @@ class SpatialEmbeddings(nn.Module):
                 self.scale_factor = math.sqrt(self.embedding_dim)
 
         if freeze:
-            freeze_params(self)
+            self.freeze()
 
     # pylint: disable=arguments-differ
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:

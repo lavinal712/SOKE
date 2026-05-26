@@ -3,6 +3,7 @@ import numpy as np
 import os
 import math
 from bisect import bisect_left, bisect_right
+from .pose_rep import smplx_axis_angle_to_features
 
 keys = ['smplx_root_pose', 
         'smplx_body_pose', 
@@ -14,7 +15,7 @@ keys = ['smplx_root_pose',
     ]
 
 
-def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle"):
     name = ann['name']
     if 'split' in ann:
         split = ann['split']
@@ -53,13 +54,7 @@ def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
         # mean = np.mean(clip_poses, axis=0)
         # std = np.std(clip_poses, axis=0)
 
-        # TODO: Completely detele those poses 
-        # clip_poses[:, 3: (3 +3*12)] = 0. 
-        # clip_poses = np.concatenate((clip_poses[:,:3], clip_poses[:,(3+3*12):]), axis=1)
-        # remove lower body joints
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = smplx_axis_angle_to_features(clip_poses, pose_rep=pose_rep)
     
     code = None
     if need_code:
@@ -73,7 +68,7 @@ def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
     return clip_poses, clip_text, name, code
 
 
-def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle"):
     clip_text = ann['text']
     name = ann['name']
     frame_list = sorted(os.listdir(os.path.join(data_dir, 'poses', name)))
@@ -90,9 +85,7 @@ def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
             pose = np.concatenate([poses[key] for key in keys], 0)
             clip_poses[frame_id] = pose
 
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = smplx_axis_angle_to_features(clip_poses, pose_rep=pose_rep)
 
     code = None
     if need_code:
@@ -106,7 +99,7 @@ def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
     return clip_poses, clip_text, name, code
 
 
-def load_iso_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, dataset=None):
+def load_iso_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, dataset=None, pose_rep="axis_angle"):
     clip_text = ann['label']
     name = ann['name']
     start, end = ann['start'], ann['end']
@@ -140,9 +133,7 @@ def load_iso_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
             pose = np.concatenate([poses[key] for key in keys], 0)
             clip_poses[frame_id] = pose
 
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = smplx_axis_angle_to_features(clip_poses, pose_rep=pose_rep)
 
     code = None
     if need_code:
@@ -161,7 +152,7 @@ def load_iso_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
     return clip_poses, clip_text, name, code
 
 
-def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle"):
     clip_text = ann['text']
     name = ann['name']
     frame_list = sorted(os.listdir(os.path.join(data_dir, name)))
@@ -178,9 +169,7 @@ def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code
             pose = np.concatenate([poses[key] for key in keys], 0)
             clip_poses[frame_id] = pose
 
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = smplx_axis_angle_to_features(clip_poses, pose_rep=pose_rep)
 
     code = None
     if need_code:

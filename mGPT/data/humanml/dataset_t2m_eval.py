@@ -36,11 +36,11 @@ class Text2MotionDatasetEval(Text2MotionDataset):
         src = sample['src']
 
         if src == 'how2sign':
-            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir)
+            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir, pose_rep=self.pose_rep)
         elif src == 'csl':
-            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root)
+            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root, pose_rep=self.pose_rep)
         elif src == 'phoenix':
-            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root)
+            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root, pose_rep=self.pose_rep)
         
         all_captions = [text]
         all_captions = all_captions * 3  #?

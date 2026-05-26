@@ -8,7 +8,7 @@ def build_callbacks(cfg, logger=None, phase='test', **kwargs):
     logger = logger
 
     # Rich Progress Bar
-    callbacks.append(progressBar())
+    # callbacks.append(progressBar())
 
     # Checkpoint Callback
     if phase == 'train':
