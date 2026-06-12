@@ -1,3 +1,4 @@
+import copy
 import json
 import os, pickle; os.environ["PYOPENGL_PLATFORM"] = "egl"
 from pathlib import Path
@@ -12,13 +13,20 @@ from tqdm import tqdm
 from mGPT.config import parse_args
 from mGPT.utils.logger import create_logger
 from mGPT.utils.rotation_conversions import axis_angle_to_matrix, matrix_to_axis_angle, matrix_to_rotation_6d, rotation_6d_to_matrix
+from mGPT.data.humanml.pose_rep import (
+    AXIS_ANGLE_NFEATS,
+    ROT6D_NFEATS,
+    rot6d_features_to_smplx_axis_angle,
+)
 import mGPT.render.matplot.plot_3d_global as plot_3d
 import pyrender, trimesh
 from mGPT.utils.human_models import smpl_x
-from moviepy.editor import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
-from moviepy.video.fx.all import crop
+try:
+    from moviepy.editor import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
+except ImportError:
+    from moviepy import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
+# from moviepy.video.fx.all import crop
 import matplotlib.pyplot as plt
-from mGPT.utils.human_models import get_coord
 import pandas as pd
 import random; random.seed(0)
 from PIL import Image
@@ -36,12 +44,73 @@ keys = ['smplx_root_pose',
         'smplx_expr'
     ]
 
-h2s_csl_mean = torch.load('../data/rzuo/CSL-Daily/mean.pt').cuda()
-h2s_csl_std = torch.load('../data/rzuo/CSL-Daily/std.pt').cuda()
-h2s_csl_mean = h2s_csl_mean[(3+3*11):]
-h2s_csl_mean = torch.cat([h2s_csl_mean[:-20], h2s_csl_mean[-10:]], dim=0)
-h2s_csl_std = h2s_csl_std[(3+3*11):]
-h2s_csl_std = torch.cat([h2s_csl_std[:-20], h2s_csl_std[-10:]], dim=0)
+def _load_axis_angle_stats(mean_path, std_path, device):
+    mean = torch.load(mean_path, map_location='cpu', weights_only=True).float()
+    std = torch.load(std_path, map_location='cpu', weights_only=True).float()
+    mean = mean[(3 + 3 * 11):]
+    mean = torch.cat([mean[:-20], mean[-10:]], dim=0)
+    std = std[(3 + 3 * 11):]
+    std = torch.cat([std[:-20], std[-10:]], dim=0)
+    if mean.numel() != AXIS_ANGLE_NFEATS or std.numel() != AXIS_ANGLE_NFEATS:
+        raise ValueError(
+            f'Axis-angle stats must be {AXIS_ANGLE_NFEATS}D after SOKE slicing, '
+            f'got mean={mean.numel()} std={std.numel()}.'
+        )
+    return mean.to(device), std.to(device)
+
+
+def _load_feature_stats(mean_path, std_path, nfeats, device, name):
+    mean = torch.load(mean_path, map_location='cpu', weights_only=True).float().reshape(-1)
+    std = torch.load(std_path, map_location='cpu', weights_only=True).float().reshape(-1)
+    if mean.numel() != nfeats or std.numel() != nfeats:
+        raise ValueError(
+            f'{name} stats must be {nfeats}D, got mean={mean.numel()} std={std.numel()}.'
+        )
+    return mean.to(device), std.to(device)
+
+
+def load_training_stats(cfg, device):
+    h2s_cfg = cfg.DATASET.H2S
+    axis_mean, axis_std = _load_axis_angle_stats(
+        h2s_cfg.MEAN_PATH,
+        h2s_cfg.STD_PATH,
+        device,
+    )
+    stats = {
+        AXIS_ANGLE_NFEATS: (axis_mean, axis_std, False),
+    }
+
+    pose_rep = str(h2s_cfg.get('POSE_REP', 'axis_angle')).lower()
+    if pose_rep in {'rot6d', 'rotation6d', '6d', '6drot'}:
+        rot6d_mean_path = h2s_cfg.get('ROT6D_MEAN_PATH', None)
+        rot6d_std_path = h2s_cfg.get('ROT6D_STD_PATH', None)
+        if rot6d_mean_path and rot6d_std_path:
+            rot6d_mean, rot6d_std = _load_feature_stats(
+                rot6d_mean_path,
+                rot6d_std_path,
+                ROT6D_NFEATS,
+                device,
+                'rot6d',
+            )
+            stats[ROT6D_NFEATS] = (rot6d_mean, rot6d_std, True)
+
+    print(f'visualization axis-angle stats: {h2s_cfg.MEAN_PATH}, {h2s_cfg.STD_PATH}')
+    if ROT6D_NFEATS in stats:
+        print(
+            'visualization rot6d stats: '
+            f'{h2s_cfg.ROT6D_MEAN_PATH}, {h2s_cfg.ROT6D_STD_PATH}'
+        )
+    return stats
+
+
+def stats_for_features(features, stats):
+    nfeats = features.shape[-1]
+    if nfeats not in stats:
+        raise ValueError(
+            f'No visualization mean/std for {nfeats}D features. '
+            f'Known feature dims: {sorted(stats.keys())}.'
+        )
+    return stats[nfeats]
 
 
 def sanitize_bbox(bbox, img_width, img_height):
@@ -149,31 +218,48 @@ def render_mesh(img, mesh, face, cam_trans, only_mesh=False):
     return img, return_mesh
 
 
-def feats2joints(features, mean, std, rot6d=False):
-    #smpl2joints and drop lowerbody
-    features = features * std + mean
-    # return recover_from_ric(features, self.njoints)
+def get_coord(root_pose, body_pose, lhand_pose, rhand_pose, jaw_pose, shape, expr):
+    batch_size = root_pose.shape[0]
+    zero_pose = torch.zeros((1, 3), dtype=body_pose.dtype, device=body_pose.device).repeat(batch_size, 1)
+    smplx_layer = copy.deepcopy(smpl_x.layer['neutral']).to(body_pose.device)
+    output = smplx_layer(
+        betas=shape,
+        body_pose=body_pose,
+        global_orient=root_pose,
+        right_hand_pose=rhand_pose,
+        left_hand_pose=lhand_pose,
+        jaw_pose=jaw_pose,
+        leye_pose=zero_pose,
+        reye_pose=zero_pose,
+        expression=expr,
+    )
+    return output.vertices, output.joints
 
-    zero_pose = torch.zeros(*features.shape[:-1], 36).to(features)
-    shape_param = torch.tensor([[[-0.07284723, 0.1795129, -0.27608207, 0.135155, 0.10748172, 
+def feats2joints(features, mean, std, rot6d=False):
+    # smpl2joints and drop lowerbody
+    features = features * std + mean
+
+    shape_param = torch.tensor([[[-0.07284723, 0.1795129, -0.27608207, 0.135155, 0.10748172,
                             0.16037364, -0.01616933, -0.03450319, 0.01369138, 0.01108842]]]).to(features)
     B, T = features.shape[:2]
     shape_param = shape_param.repeat(B, T, 1).view(B*T, -1)
-    # print(features.shape, shape_param.shape)
 
     if rot6d:
-        # 6d rotation to axis angle
-        expr = features[..., -10:] #B,T,10
-        features = features[..., :-10].view(B, T, -1, 6)
-        features = matrix_to_axis_angle(rotation_6d_to_matrix(features))  #B,T,N,3
-        features = features.view(B, T, -1)
-        features = torch.cat([features, expr], dim=-1)
+        root_pose, body_pose, lhand_pose, rhand_pose, jaw_pose, expr = rot6d_features_to_smplx_axis_angle(features)
+    else:
+        zero_pose = torch.zeros(*features.shape[:-1], 36).to(features)
+        features = torch.cat([zero_pose, features], dim=-1).view(B*T, -1)  # 133 + 36 = 169
+        root_pose = features[..., 0:3]
+        body_pose = features[..., 3:66]
+        lhand_pose = features[..., 66:111]
+        rhand_pose = features[..., 111:156]
+        jaw_pose = features[..., 156:159]
+        expr = features[..., 159:169]
 
-    features = torch.cat([zero_pose, features], dim=-1).view(B*T, -1)  #133+36=169
-    vertices, joints = get_coord(root_pose=features[..., 0:3], body_pose=features[..., 3:66], 
-                                    lhand_pose=features[..., 66:111], rhand_pose=features[..., 111:156], 
-                                    jaw_pose=features[..., 156:159], shape=shape_param, 
-                                    expr=features[..., 159:169])
+    vertices, joints = get_coord(root_pose=root_pose, body_pose=body_pose,
+                                 lhand_pose=lhand_pose, rhand_pose=rhand_pose,
+                                 jaw_pose=jaw_pose, shape=shape_param,
+                                 expr=expr)
     return vertices, joints
 
 
@@ -187,6 +273,9 @@ def main(save_mesh=False):
     cfg = parse_args(phase="demo")  # parse config file
     cfg.FOLDER = cfg.TEST.FOLDER
     os.environ["CUDA_VISIBLE_DEVICES"] = cfg.USE_GPUS
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    training_stats = load_training_stats(cfg, device)
+    axis_mean, axis_std, _ = training_stats[AXIS_ANGLE_NFEATS]
     
     dataset = cfg.DEMO_DATASET
     # visualize parameters
@@ -198,23 +287,22 @@ def main(save_mesh=False):
     focal = [focal[0] / w * bbox[2], focal[1] / h * bbox[3]]
     princpt = [princpt[0] / w * bbox[2] + bbox[0], princpt[1] / h * bbox[3] + bbox[1]]
     cam_trans = np.array([-2.6177440e-03, 0.1, -13], dtype=np.float32)
-    save_dir = f'visualize/compare_{dataset}'
-    save_mesh_dir = f'visualize/compare_{dataset}'
-    rot6d = cfg.DATASET.H2S.get('rot6d', False)
+    save_dir = f'visualize/compare_{dataset}_v4'
+    save_mesh_dir = f'visualize/compare_{dataset}_v4'
     os.makedirs(save_dir, exist_ok=True)
     if save_mesh:
         os.makedirs(save_mesh_dir, exist_ok=True)
 
     if dataset == 'csl':
         baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/CSL-Daily/csl-daily'
+        raw_vid_dir = 'data/CSL-Daily/csl-daily'
     elif dataset == 'how2sign':
         baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/How2Sign/test/raw_videos'
+        raw_vid_dir = 'data/How2Sign/test/raw_videos'
     elif dataset == 'phoenix':
-        baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/Phoenix_2014T/fullFrame-210x260px'
-    ours = 'results/mgpt/deto'
+        baseline = 'data/Phoenix_2014T'
+        raw_vid_dir = '/aiarena/group/gmgroup/hongyq/data/PHOENIX/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/features/fullFrame-210x260px'
+    ours = 'results/signspark/SignSparK_v4'
     split = 'test'
 
     scores_ours = {}
@@ -241,12 +329,27 @@ def main(save_mesh=False):
 
         n = names[i]
         print(i, n,)
-        for r in range(8):
-            dir = os.path.join(baseline, f'{split}_rank_{r}')
-            if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
-                with open(os.path.join(dir, f"{n.split('/')[-1]}.pkl"), 'rb') as f:
-                    res_base = pickle.load(f)
-                break
+        # for r in range(6):
+        #     dir = os.path.join(baseline, f'{split}_rank_{r}')
+        #     if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
+        #         with open(os.path.join(dir, f"{n.split('/')[-1]}.pkl"), 'rb') as f:
+        #             res_base = pickle.load(f)
+        #         break
+        dir = os.path.join(baseline, f"{split}/{n.split('/')[-1]}")
+        clip_poses = np.zeros([len(os.listdir(dir)), 179])
+        for idx, file in enumerate(sorted(os.listdir(dir))):
+            with open(os.path.join(dir, file), 'rb') as f:
+                poses = pickle.load(f)
+
+            pose = np.concatenate([poses[key] for key in keys], 0)
+            clip_poses[idx] = pose
+        clip_poses = clip_poses[:,(3+3*11):]
+        # remove shape
+        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = (clip_poses - axis_mean.detach().cpu().numpy()) / (axis_std.detach().cpu().numpy()+1e-10)
+        res_base = {
+            'feats_rst': clip_poses.astype(np.float32),
+        }
         for r in range(8):
             dir = os.path.join(ours, f'{split}_rank_{r}')
             if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
@@ -260,14 +363,12 @@ def main(save_mesh=False):
         text = res_ours['text']
         print(text)
 
-        vertices_ref = feats2joints(torch.from_numpy(feats_ref).cuda().unsqueeze(0), mean=h2s_csl_mean, std=h2s_csl_std, rot6d=rot6d)[0].cpu().numpy()
-        vertices_rst_ours = feats2joints(torch.from_numpy(feats_rst_ours).cuda().unsqueeze(0), mean=h2s_csl_mean, std=h2s_csl_std, rot6d=rot6d)[0].cpu().numpy()
-        if dataset == 'how2sign':
-            vertices_rst_base = feats2joints(torch.from_numpy(feats_rst_base).cuda().unsqueeze(0), h2s_csl_mean, h2s_csl_std)[0].cpu().numpy()
-        elif dataset == 'csl':
-            vertices_rst_base = feats2joints(torch.from_numpy(feats_rst_base).cuda().unsqueeze(0), h2s_csl_mean, h2s_csl_std)[0].cpu().numpy()
-        elif dataset == 'phoenix':
-            vertices_rst_base = feats2joints(torch.from_numpy(feats_rst_base).cuda().unsqueeze(0), h2s_csl_mean, h2s_csl_std)[0].cpu().numpy()
+        ref_mean, ref_std, ref_rot6d = stats_for_features(feats_ref, training_stats)
+        rst_mean, rst_std, rst_rot6d = stats_for_features(feats_rst_ours, training_stats)
+        base_mean, base_std, base_rot6d = stats_for_features(feats_rst_base, training_stats)
+        vertices_ref = feats2joints(torch.from_numpy(feats_ref).to(device).unsqueeze(0), mean=ref_mean, std=ref_std, rot6d=ref_rot6d)[0].cpu().numpy()
+        vertices_rst_ours = feats2joints(torch.from_numpy(feats_rst_ours).to(device).unsqueeze(0), mean=rst_mean, std=rst_std, rot6d=rst_rot6d)[0].cpu().numpy()
+        vertices_rst_base = feats2joints(torch.from_numpy(feats_rst_base).to(device).unsqueeze(0), base_mean, base_std, rot6d=base_rot6d)[0].cpu().numpy()
 
         frames = []
         rst_len = feats_rst_ours.shape[0]
@@ -284,7 +385,7 @@ def main(save_mesh=False):
             for frame in clip.iter_frames():
                 frame = Image.fromarray(frame, 'RGB')
                 gt_frames.append(frame)
-            csv = pd.read_csv('../data/How2Sign/test/re_aligned/how2sign_realigned_test_preprocessed_fps.csv')
+            csv = pd.read_csv('data/How2Sign/test/re_aligned/how2sign_realigned_test_preprocessed_fps.csv')
             raw_fps = csv[csv['SENTENCE_NAME']==n]['fps'].item()
             if raw_fps > 25:
                 gt_frames = sample(gt_frames, count=int(25*len(gt_frames)/raw_fps))

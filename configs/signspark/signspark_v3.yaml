@@ -1,4 +1,4 @@
-NAME: SignSparK
+NAME: SignSparK_v3
 ACCELERATOR: 'gpu'
 NUM_NODES: 1
 DEVICE: [0, 1, 2, 3, 4, 5, 6, 7]
@@ -7,9 +7,9 @@ TRAIN:
   STAGE: flow_matching
   NUM_WORKERS: 8
   BATCH_SIZE: 4
-  END_EPOCH: 150
-  RESUME: ''
-  PRETRAINED: ''
+  END_EPOCH: 300
+  RESUME: '/aiarena/gpfs/SOKE-lavinal712/experiments/signspark/SignSparK'
+  PRETRAINED: '/aiarena/gpfs/SOKE-lavinal712/experiments/signspark/SignSparK/checkpoints/last.ckpt'
   PRETRAINED_VAE: ''
   OPTIM:
     target: AdamW
@@ -34,7 +34,7 @@ TEST:
   BATCH_SIZE: 2
   NUM_WORKERS: 4
   REPLICATION_TIMES: 1
-  SAVE_PREDICTIONS: False
+  SAVE_PREDICTIONS: True
   INFERENCE_MODE: null
 
 DATASET:
@@ -105,3 +105,6 @@ LOGGER:
   WANDB:
     params:
       project: SLG
+      name: SignSparK
+      id: oz0682ww
+      resume: allow

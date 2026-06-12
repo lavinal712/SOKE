@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Compute SignSpark rot6d normalization stats from raw training poses."""
+"""Compute SignSpark rot6d normalization stats from train-time pose clips."""
 
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import gzip
 import pickle
 import sys
+import types
 from pathlib import Path
 from typing import Iterable
 
@@ -19,9 +21,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mGPT.data.humanml.dataset_t2m import bad_how2sign_ids
+HUMANML_DIR = REPO_ROOT / "mGPT" / "data" / "humanml"
+humanml_pkg = types.ModuleType("mGPT.data.humanml")
+humanml_pkg.__path__ = [str(HUMANML_DIR)]
+sys.modules.setdefault("mGPT.data.humanml", humanml_pkg)
+
 from mGPT.data.humanml.load_data import load_csl_sample, load_h2s_sample, load_phoenix_sample
 from mGPT.data.humanml.pose_rep import ROT6D_NFEATS
+
+
+def load_bad_how2sign_ids() -> list[str]:
+    source = (HUMANML_DIR / "dataset_t2m.py").read_text()
+    module = ast.parse(source)
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == "bad_how2sign_ids" for target in node.targets):
+            return ast.literal_eval(node.value)
+    return []
+
+
+bad_how2sign_ids = load_bad_how2sign_ids()
 
 
 DATASET_ALIASES = {
@@ -57,15 +77,44 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--out-mean",
-        default=REPO_ROOT / "data" / "CSL-Daily" / "rot6d_mean.pt",
+        default=REPO_ROOT
+        / "data"
+        / "rot6d_stats"
+        / "how2sign_csl_phoenix_train_lenproc_rot6d_mean.pt",
         type=Path,
         help="Output path for the 246-D rot6d mean tensor.",
     )
     parser.add_argument(
         "--out-std",
-        default=REPO_ROOT / "data" / "CSL-Daily" / "rot6d_std.pt",
+        default=REPO_ROOT
+        / "data"
+        / "rot6d_stats"
+        / "how2sign_csl_phoenix_train_lenproc_rot6d_std.pt",
         type=Path,
         help="Output path for the 246-D rot6d std tensor.",
+    )
+    parser.add_argument(
+        "--max-motion-len",
+        default=400,
+        type=int,
+        help="Training MAX_MOTION_LEN used before statistics.",
+    )
+    parser.add_argument(
+        "--min-motion-len",
+        default=40,
+        type=int,
+        help="Training MIN_MOTION_LEN used before statistics.",
+    )
+    parser.add_argument(
+        "--unit-len",
+        default=4,
+        type=int,
+        help="Training UNIT_LEN used before statistics.",
+    )
+    parser.add_argument(
+        "--no-length-process",
+        action="store_true",
+        help="Disable train-time length processing and use raw loaded clips.",
     )
     parser.add_argument(
         "--eps",
@@ -184,6 +233,26 @@ def load_rot6d_clip(dataset: str, ann: dict, data_root: Path, split: str):
     return clip, name
 
 
+def apply_train_length_process(
+    clip: torch.Tensor,
+    min_motion_len: int,
+    max_motion_len: int,
+    unit_len: int,
+) -> torch.Tensor:
+    """Mirror Text2MotionDataset.__getitem__ length handling."""
+    m_length = clip.shape[0]
+    if m_length < min_motion_len:
+        ids = torch.linspace(0, m_length - 1, steps=min_motion_len).long()
+        return clip[ids]
+    if m_length > max_motion_len:
+        ids = torch.linspace(0, m_length - 1, steps=max_motion_len).long()
+        return clip[ids]
+
+    m_length = (m_length // unit_len) * unit_len
+    start = (clip.shape[0] - m_length) // 2
+    return clip[start:start + m_length]
+
+
 def update_running_stats(
     count: int,
     mean: torch.Tensor,
@@ -268,6 +337,13 @@ def main() -> None:
                 raise ValueError(
                     f"{dataset}:{name} has shape {tuple(clip_tensor.shape)}, "
                     f"expected (*, {ROT6D_NFEATS})."
+                )
+            if not args.no_length_process:
+                clip_tensor = apply_train_length_process(
+                    clip_tensor,
+                    args.min_motion_len,
+                    args.max_motion_len,
+                    args.unit_len,
                 )
 
             frame_count, running_mean, running_m2 = update_running_stats(

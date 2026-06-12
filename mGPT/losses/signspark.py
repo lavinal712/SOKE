@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from .base import BaseLosses
 
 
+HAND_START_IDX = 66
+
+
 def create_mask(length, max_len, device):
     if not torch.is_tensor(length):
         length = torch.tensor(length, device=device)
@@ -39,6 +42,12 @@ class SignSparkLosses(BaseLosses):
             params["vel_loss"] = cfg.LOSS.get(
                 "LAMBDA_VELOCITY",
                 cfg.model.params.get("velocity_loss_weight", 0.1),
+            )
+
+            losses.append("hand_acc_loss")
+            params["hand_acc_loss"] = cfg.LOSS.get(
+                "LAMBDA_HAND_ACC",
+                cfg.model.params.get("hand_acc_loss_weight", 0.0),
             )
 
         # BaseLosses instantiates these, but SignSparK uses masked losses below.
@@ -122,9 +131,25 @@ class SignSparkLosses(BaseLosses):
             loss_type=self.recons_loss,
         )
 
+        hand_rst = m_rst[..., HAND_START_IDX:]
+        hand_ref = m_ref[..., HAND_START_IDX:]
+        hand_acc_rst = hand_rst[:, 2:] - 2.0 * hand_rst[:, 1:-1] + hand_rst[:, :-2]
+        hand_acc_ref = hand_ref[:, 2:] - 2.0 * hand_ref[:, 1:-1] + hand_ref[:, :-2]
+        hand_acc_length = None
+        if length is not None:
+            hand_acc_length = length.to(device=m_ref.device, dtype=torch.long).clamp_min(2) - 2
+
+        hand_acc_loss = self.motion_loss(
+            hand_acc_rst,
+            hand_acc_ref,
+            length=hand_acc_length,
+            loss_type=self.recons_loss,
+        )
+
         total = self.update_loss("cfm_loss", cfm_loss)
         total += self.update_loss("recon_loss", recon_loss)
         total += self.update_loss("vel_loss", vel_loss)
+        total += self.update_loss("hand_acc_loss", hand_acc_loss)
 
         rs_set["m_rst"] = m_rst
 
