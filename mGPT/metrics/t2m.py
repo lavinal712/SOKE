@@ -148,7 +148,7 @@ class TM2TMetrics(Metric):
                 Note that when align_idx=0, the metric is DTW-JPE; when align_idx=None, the metric is DTW-PA-JPE. But we didn't modify the variable names.
                 '''
                 joint_idx = self.joint_part2idx['upper_body']
-                dist_func = partial(l2_dist_align, wanted=joint_idx, align_idx=0)
+                dist_func = partial(l2_dist_align, wanted=joint_idx, align_idx=None)
                 value = dtw(joints_rst_cur, joints_ref_cur, dist_func)[0]
                 setattr(self, f'{data_src}_DTW_MPJPE_PA_body', getattr(self, f'{data_src}_DTW_MPJPE_PA_body') + value)
                 self.name2scores[cur_name][f'{data_src}_DTW_MPJPE_PA_body'] = value
@@ -157,7 +157,7 @@ class TM2TMetrics(Metric):
                 joint_idx = self.joint_part2idx['lhand']
                 joint_gt_lhand = torch.matmul(smpl_x.orig_hand_regressor['left'], mesh_gt).float().numpy()
                 joint_out_lhand = torch.matmul(smpl_x.orig_hand_regressor['left'], mesh_out).float().numpy()
-                dist_func = partial(l2_dist_align, align_idx=0)
+                dist_func = partial(l2_dist_align, align_idx=None)
                 value = dtw(joint_out_lhand, joint_gt_lhand, dist_func)[0]
                 setattr(self, f"{data_src}_DTW_MPJPE_PA_lhand", getattr(self, f"{data_src}_DTW_MPJPE_PA_lhand") + value)
                 self.name2scores[cur_name][f"{data_src}_DTW_MPJPE_PA_lhand"] = value
@@ -166,7 +166,7 @@ class TM2TMetrics(Metric):
                 joint_idx = self.joint_part2idx['rhand']
                 joint_gt_rhand = torch.matmul(smpl_x.orig_hand_regressor['right'], mesh_gt).float().numpy()
                 joint_out_rhand = torch.matmul(smpl_x.orig_hand_regressor['right'], mesh_out).float().numpy()
-                dist_func = partial(l2_dist_align, align_idx=0)
+                dist_func = partial(l2_dist_align, align_idx=None)
                 value = dtw(joint_out_rhand, joint_gt_rhand, dist_func)[0]
                 setattr(self, f"{data_src}_DTW_MPJPE_PA_rhand", getattr(self, f"{data_src}_DTW_MPJPE_PA_rhand") + value)
                 self.name2scores[cur_name][f"{data_src}_DTW_MPJPE_PA_rhand"] = value

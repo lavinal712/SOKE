@@ -27,5 +27,5 @@ librosa
 triangle==20220202
 
 bpy==3.4.0
-numpy==2.1.3
+numpy==1.26.4
 tqdm==4.67.0

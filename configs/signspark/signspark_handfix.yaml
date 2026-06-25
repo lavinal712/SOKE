@@ -1,0 +1,108 @@
+NAME: SignSparK_handfix
+ACCELERATOR: 'gpu'
+NUM_NODES: 1
+DEVICE: [0, 1, 2, 3, 4, 5, 6, 7]
+
+TRAIN:
+  STAGE: flow_matching
+  NUM_WORKERS: 8
+  BATCH_SIZE: 4
+  END_EPOCH: 150
+  RESUME: ''
+  PRETRAINED: ''
+  PRETRAINED_VAE: ''
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 2e-4
+      betas: [0.9, 0.99]
+      weight_decay: 0.01
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 2
+  SPLIT: val
+  NUM_WORKERS: 4
+
+TEST:
+  CHECKPOINTS: null
+  SPLIT: test
+  BATCH_SIZE: 2
+  NUM_WORKERS: 4
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: True
+  INFERENCE_MODE: null
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  H2S:
+    DATASET_NAME: how2sign_csl_phoenix
+    ROOT: ./data/How2Sign
+    CSL_ROOT: ./data/CSL-Daily
+    PHOENIX_ROOT: ./data/Phoenix_2014T
+    MEAN_PATH: ./data/CSL-Daily/mean.pt
+    STD_PATH: ./data/CSL-Daily/std.pt
+    POSE_REP: rot6d
+    ROT6D_MEAN_PATH: ./data/stats/rot6d_mean.pt
+    ROT6D_STD_PATH: ./data/stats/rot6d_std.pt
+    HANDFIX: True
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+  CODE_PATH: ''
+  TASK_PATH: ''
+
+METRIC:
+  TYPE: ['TM2TMetrics']
+
+LOSS:
+  LAMBDA_CFM: 2.0
+  LAMBDA_RECON: 1.0
+  LAMBDA_VELOCITY: 1.0
+  ABLATION:
+    RECONS_LOSS: 'l2'
+
+model:
+  target: mGPT.models.signspark.SignSparK
+  params:
+    condition: 'text'
+    task: 't2m'
+    stage: ${TRAIN.STAGE}
+    debug: ${DEBUG}
+    metrics_dict: ${METRIC.TYPE}
+    text_dim: 512
+    hidden_dim: 256
+    dim_mults: [1, 2, 4, 8]
+    motion_vae: null
+    text_encoder_name: /aiarena/group/gmgroup/hongyq/models/M-CLIP/XLM-Roberta-Large-Vit-B-32
+    freeze_text_encoder: true
+    keyframe_strategy: uniform_segments
+    keyframe_ratio: 0.12
+    keyframe_num: null
+    min_keyframes: 3
+    keyframe_segment_size: 16
+    include_endpoints: true
+    sampling_steps: 10
+    guidance_scale: 1.5
+    inference_mode: kf2p
+    cfg_text_dropout: 0.0
+    cfg_keyframe_dropout: 0.0
+    cfg_no_keyframe_dropout: 0.0
+    cfg_guidance_dropout: 0.1
+
+    codebook_size: 512
+
+LOGGER:
+  TYPE: ['wandb']
+  VAL_EVERY_STEPS: 5
+  WANDB:
+    params:
+      project: SLG

@@ -10,7 +10,7 @@ import pandas as pd
 from tqdm import tqdm
 import random; random.seed(0)
 from copy import deepcopy
-from .load_data import load_csl_sample, load_h2s_sample, load_phoenix_sample
+from .load_data import AXIS_ANGLE_NFEATS, ROT6D_NFEATS, hand_feature_slice, load_csl_sample, load_h2s_sample, load_phoenix_sample
 
 # Some how2sign ids are broken, failing in pose fitting.
 bad_how2sign_ids = ['0DU7wWLK-QU_0-8-rgb_front', '0ICZi26jdaQ_28-5-rgb_front', '0vNfEYst_tQ_11-8-rgb_front', '13X0vEMNm7M_8-5-rgb_front', '14weIYQswlE_23-8-rgb_front', '1B56XMJ-j1Q_13-8-rgb_front', '1P0oKY4FNyI_0-8-rgb_front', '1dpRaxOTfZs_0-8-rgb_front', '1ei1kVTw23A_29-8-rgb_front', '1spCnuBmWYk_0-8-rgb_front', '2-vXO7MMLJc_0-5-rgb_front', '21PbS6wnHtY_0-5-rgb_front', '3tyfxL2wO-M_0-8-rgb_front', 'BpYDl3AO4B8_0-1-rgb_front', 'CH7AviIr0-0_14-8-rgb_front', 'CJ8RyW9pzKU_6-8-rgb_front', 'D0T7ho08Q3o_25-2-rgb_front', 'Db5SUQvNsHc_18-1-rgb_front', 'Eh697LCFjTw_0-3-rgb_front', 'F-p1IdedNbg_23-8-rgb_front', 'aUBQCNegrYc_13-1-rgb_front', 'cvn7htBA8Xc_9-8-rgb_front', 'czBrBQgZIuc_19-5-rgb_front', 'dbSAB8F8GYc_11-9-rgb_front', 'doMosV-zfCI_7-2-rgb_front', 'dvBdWGLzayI_10-8-rgb_front', 'eBrlZcccILg_26-3-rgb_front', '39FN42e41r0_17-1-rgb_front', 'a4Nxq0QV_WA_9-3-rgb_front', 'fzrJBu2qsM8_11-8-rgb_front', 'g3Cc_1-V31U_12-3-rgb_front']
@@ -42,6 +42,11 @@ class Text2MotionDataset(data.Dataset):
         self.unit_length = unit_length
         self.csl_root = kwargs.get('csl_root', None)
         self.phoenix_root = kwargs.get('phoenix_root', None)
+        self.pose_rep = str(kwargs.get('pose_rep', 'axis_angle')).lower()
+        self.handfix = bool(kwargs.get('handfix', False))
+        self.body_only = bool(kwargs.get('BODYONLY', False))
+        if self.body_only and (not self.handfix or self.pose_rep != "rot6d"):
+            raise ValueError("BODYONLY requires handfix=True and pose_rep=rot6d.")
 
         # Data mean and std
         self.mean = mean
@@ -103,7 +108,10 @@ class Text2MotionDataset(data.Dataset):
 
         # random.shuffle(self.all_data)
         print(f'Data loading done. All: {len(self.all_data)}, How2Sign: {self.h2s_len}, CSL: {self.csl_len}, Phoenix: {self.phoenix_len}')
-        self.nfeats = 133
+        if self.body_only:
+            self.nfeats = hand_feature_slice(self.pose_rep).start
+        else:
+            self.nfeats = ROT6D_NFEATS if self.pose_rep == "rot6d" else AXIS_ANGLE_NFEATS
         # self.reset_max_len(self.max_length)
 
 
@@ -123,15 +131,17 @@ class Text2MotionDataset(data.Dataset):
         src = sample['src']
 
         if src == 'how2sign':
-            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir)
+            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir, pose_rep=self.pose_rep, handfix=self.handfix)
         elif src == 'csl':
-            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root)
+            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root, pose_rep=self.pose_rep, handfix=self.handfix)
         elif src == 'phoenix':
-            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root)
+            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root, pose_rep=self.pose_rep, handfix=self.handfix)
         
         all_captions = [text]
 
         clip_poses = (clip_poses - self.mean.numpy())/(self.std.numpy()+1e-10)
+        if self.body_only:
+            clip_poses = clip_poses[:, :hand_feature_slice(self.pose_rep).start]
         # return torch.from_numpy(clip_poses).float(), basename, clip_text
         m_length = clip_poses.shape[0]
         if m_length < self.min_motion_length:

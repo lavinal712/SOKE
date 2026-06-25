@@ -1,7 +1,7 @@
 import random
 import numpy as np
 import torch, os, pickle, math
-from .load_data import load_csl_sample, load_h2s_sample, load_phoenix_sample
+from .load_data import hand_feature_slice, load_csl_sample, load_h2s_sample, load_phoenix_sample
 from .dataset_t2m import Text2MotionDataset
 
 
@@ -36,16 +36,18 @@ class Text2MotionDatasetEval(Text2MotionDataset):
         src = sample['src']
 
         if src == 'how2sign':
-            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir)
+            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir, pose_rep=self.pose_rep, handfix=self.handfix)
         elif src == 'csl':
-            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root)
+            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root, pose_rep=self.pose_rep, handfix=self.handfix)
         elif src == 'phoenix':
-            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root)
+            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root, pose_rep=self.pose_rep, handfix=self.handfix)
         
         all_captions = [text]
         all_captions = all_captions * 3  #?
 
         clip_poses = (clip_poses - self.mean.numpy())/(self.std.numpy()+1e-10)
+        if self.body_only:
+            clip_poses = clip_poses[:, :hand_feature_slice(self.pose_rep).start]
         # return torch.from_numpy(clip_poses).float(), basename, clip_text
         m_length = clip_poses.shape[0]
         if m_length < self.min_motion_length:

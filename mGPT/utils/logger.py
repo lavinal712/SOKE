@@ -59,7 +59,12 @@ def new_dir(cfg, phase, time_str, final_output_dir):
         file_list = sorted(os.listdir(final_output_dir), reverse=True)
         for item in file_list:
             if item.endswith('.log'):
-                os.rename(str(final_output_dir), str(final_output_dir) + '_' + cfg.TIME)
+                backup_dir = str(final_output_dir) + '_' + cfg.TIME
+                suffix = 1
+                while os.path.exists(backup_dir):
+                    backup_dir = str(final_output_dir) + '_' + cfg.TIME + '_' + str(suffix)
+                    suffix += 1
+                os.rename(str(final_output_dir), backup_dir)
                 break
     final_output_dir.mkdir(parents=True, exist_ok=True)
     # write config yaml

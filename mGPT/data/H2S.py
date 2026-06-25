@@ -6,8 +6,10 @@ from .humanml.utils.word_vectorizer import WordVectorizer
 from .humanml.scripts.motion_process import (process_file, recover_from_ric)
 from . import BASEDataModule
 from .humanml import Text2MotionDatasetEval, Text2MotionDataset, Text2MotionDatasetCB, MotionDataset, H2SMotionDatasetVQ, MotionDatasetVQ, Text2MotionDatasetToken, Text2MotionDatasetM2T
+from .humanml.load_data import AXIS_ANGLE_NFEATS, ROT6D_BODY_JOINTS, ROT6D_NFEATS
 from .utils import humanml3d_collate
 from mGPT.utils.human_models import get_coord
+from mGPT.utils.rotation_conversions import matrix_to_axis_angle, rotation_6d_to_matrix
 
 
 class H2SDataModule(BASEDataModule):
@@ -26,6 +28,14 @@ class H2SDataModule(BASEDataModule):
         self.hparams.csl_root = cfg.DATASET.H2S.CSL_ROOT
         self.hparams.phoenix_root = cfg.DATASET.H2S.get('PHOENIX_ROOT', None)
         self.hparams.pred_data_dir = cfg.DATASET.H2S.get('pred_data_dir', False)
+        self.hparams.pose_rep = str(cfg.DATASET.H2S.get('POSE_REP', 'axis_angle')).lower()
+        self.hparams.handfix = bool(cfg.DATASET.H2S.get('HANDFIX', False))
+        self.hparams.BODYONLY = bool(cfg.DATASET.H2S.get('BODYONLY', False))
+        if self.hparams.BODYONLY:
+            if not self.hparams.handfix:
+                raise ValueError("BODYONLY=True requires DATASET.H2S.HANDFIX=True.")
+            if self.hparams.pose_rep != 'rot6d':
+                raise ValueError("BODYONLY=True is only supported with POSE_REP=rot6d.")
         
         # Path to the dataset
         data_root = cfg.DATASET.H2S.ROOT
@@ -45,15 +55,35 @@ class H2SDataModule(BASEDataModule):
         #     std_path = pjoin(self.hparams.csl_root, "h2s_csl_std.pt")
         mean_path = cfg.DATASET.H2S.MEAN_PATH
         std_path = cfg.DATASET.H2S.STD_PATH
-        print('mean path', mean_path, 'std_path: ', std_path)
+        axis_mean = torch.load(mean_path).float()
+        axis_std = torch.load(std_path).float()
+        axis_mean = axis_mean[(3 + 3 * 11):]
+        axis_mean = torch.cat([axis_mean[:-20], axis_mean[-10:]], dim=0)
+        axis_std = axis_std[(3 + 3 * 11):]
+        axis_std = torch.cat([axis_std[:-20], axis_std[-10:]], dim=0)
+        self.hparams.save_mean = axis_mean
+        self.hparams.save_std = axis_std
 
-        self.hparams.mean = torch.load(mean_path)
-        self.hparams.std = torch.load(std_path)
-        # filter out unwanted joints
-        self.hparams.mean = self.hparams.mean[(3+3*11):]
-        self.hparams.mean = torch.cat([self.hparams.mean[:-20], self.hparams.mean[-10:]], dim=0)
-        self.hparams.std = self.hparams.std[(3+3*11):]
-        self.hparams.std = torch.cat([self.hparams.std[:-20], self.hparams.std[-10:]], dim=0)
+        if self.hparams.pose_rep == 'rot6d':
+            mean_path = cfg.DATASET.H2S.ROT6D_MEAN_PATH
+            std_path = cfg.DATASET.H2S.ROT6D_STD_PATH
+            if not os.path.exists(mean_path) or not os.path.exists(std_path):
+                raise FileNotFoundError(f"Missing rot6d mean/std: {mean_path}, {std_path}")
+            print('rot6d mean path', mean_path, 'std_path: ', std_path)
+            self.hparams.mean = torch.load(mean_path).float().reshape(-1)
+            self.hparams.std = torch.load(std_path).float().reshape(-1)
+            if self.hparams.mean.numel() != ROT6D_NFEATS or self.hparams.std.numel() != ROT6D_NFEATS:
+                raise ValueError(
+                    f"rot6d mean/std must have {ROT6D_NFEATS} dims, "
+                    f"got {self.hparams.mean.numel()} and {self.hparams.std.numel()}."
+                )
+            self.nfeats = len(ROT6D_BODY_JOINTS) * 6 if self.hparams.BODYONLY else ROT6D_NFEATS
+        else:
+            print('mean path', mean_path, 'std_path: ', std_path)
+            self.hparams.pose_rep = 'axis_angle'
+            self.hparams.mean = axis_mean
+            self.hparams.std = axis_std
+            self.nfeats = AXIS_ANGLE_NFEATS
         
         # Mean and std for fair evaluation
         # dis_data_root_eval = pjoin(cfg.DATASET.HUMANML3D.MEAN_STD_PATH, 't2m', "Comp_v6_KLD01", "meta")
@@ -99,15 +129,55 @@ class H2SDataModule(BASEDataModule):
 
         # Get additional info of the dataset
         # self._sample_set = self.get_sample_set(overrides={"split": "test", "tiny": True})
-        self.nfeats = 133  #self._sample_set.nfeats
+        # self.nfeats = 133  #self._sample_set.nfeats
         cfg.DATASET.NFEATS = self.nfeats
         
 
+    def _rot6d_to_axis_angle_features(self, features):
+        out_shape = features.shape[:-1]
+        body_end = len(ROT6D_BODY_JOINTS) * 6
+        nfeats = features.shape[-1]
+        if nfeats not in (body_end, ROT6D_NFEATS):
+            raise ValueError(f"Expected {body_end} or {ROT6D_NFEATS} rot6d dims, got {nfeats}.")
+
+        flat = features.reshape(-1, nfeats)
+        left_end = body_end + 15 * 6
+
+        body_aa = matrix_to_axis_angle(
+            rotation_6d_to_matrix(flat[:, :body_end].reshape(-1, len(ROT6D_BODY_JOINTS), 6))
+        ).reshape(flat.shape[0], len(ROT6D_BODY_JOINTS), 3)
+        if nfeats == ROT6D_NFEATS:
+            left_aa = matrix_to_axis_angle(
+                rotation_6d_to_matrix(flat[:, body_end:left_end].reshape(-1, 15, 6))
+            ).reshape(flat.shape[0], -1)
+            right_aa = matrix_to_axis_angle(
+                rotation_6d_to_matrix(flat[:, left_end:].reshape(-1, 15, 6))
+            ).reshape(flat.shape[0], -1)
+        else:
+            left_aa = flat.new_zeros(flat.shape[0], 45)
+            right_aa = flat.new_zeros(flat.shape[0], 45)
+
+        body_pose = flat.new_zeros(flat.shape[0], 21, 3)
+        for src_idx, dst_idx in enumerate(ROT6D_BODY_JOINTS):
+            body_pose[:, dst_idx] = body_aa[:, src_idx]
+        body_pose = body_pose[:, 11:21].reshape(flat.shape[0], -1)
+        jaw_expr = flat.new_zeros(flat.shape[0], 13)
+        features = torch.cat([body_pose, left_aa, right_aa, jaw_expr], dim=-1)
+        return features.reshape(*out_shape, AXIS_ANGLE_NFEATS)
+
     def feats2joints(self, features):
         #smpl2joints and drop lowerbody
-        mean = self.hparams.mean.to(features)
-        std = self.hparams.std.to(features)
-        features = features * std + mean
+        if self.hparams.pose_rep == 'rot6d':
+            body_end = len(ROT6D_BODY_JOINTS) * 6
+            if self.hparams.BODYONLY and features.shape[-1] == body_end:
+                mean = self.hparams.mean[:body_end].to(features)
+                std = self.hparams.std[:body_end].to(features)
+                features = features * std + mean
+            else:
+                features = self.denormalize(features)
+            features = self._rot6d_to_axis_angle_features(features)
+        else:
+            features = self.denormalize(features)
         # return recover_from_ric(features, self.njoints)
 
         zero_pose = torch.zeros(*features.shape[:-1], 36).to(features)
@@ -131,19 +201,36 @@ class H2SDataModule(BASEDataModule):
         return features
 
     def normalize(self, features):
-        mean = torch.tensor(self.hparams.mean).to(features)
-        std = torch.tensor(self.hparams.std).to(features)
+        mean = self.hparams.mean.to(features)
+        std = self.hparams.std.to(features)
         features = (features - mean) / std
         return features
 
     def denormalize(self, features):
-        mean = torch.tensor(self.hparams.mean).to(features)
-        std = torch.tensor(self.hparams.std).to(features)
+        mean = self.hparams.mean.to(features)
+        std = self.hparams.std.to(features)
         features = features * std + mean
         return features
 
+    def features_for_prediction_save(self, features):
+        if self.hparams.pose_rep != 'rot6d':
+            return features
+        body_end = len(ROT6D_BODY_JOINTS) * 6
+        if self.hparams.BODYONLY and features.shape[-1] == body_end:
+            mean = self.hparams.mean[:body_end].to(features)
+            std = self.hparams.std[:body_end].to(features)
+            features = features * std + mean
+        else:
+            features = self.denormalize(features)
+        features = self._rot6d_to_axis_angle_features(features)
+        mean = self.hparams.save_mean.to(features)
+        std = self.hparams.save_std.to(features)
+        return (features - mean) / (std + 1e-10)
+
     def renorm4t2m(self, features):
         # renorm to t2m norms for using t2m evaluators
+        if self.hparams.pose_rep == 'rot6d':
+            return self.features_for_prediction_save(features)
         ori_mean = self.hparams.mean.to(features)
         ori_std = self.hparams.std.to(features)
         eval_mean = self.hparams.mean_eval.to(features)

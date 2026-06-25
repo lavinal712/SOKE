@@ -15,8 +15,11 @@ from mGPT.utils.rotation_conversions import axis_angle_to_matrix, matrix_to_axis
 import mGPT.render.matplot.plot_3d_global as plot_3d
 import pyrender, trimesh
 from mGPT.utils.human_models import smpl_x
-from moviepy.editor import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
-from moviepy.video.fx.all import crop
+try:
+    from moviepy.editor import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
+except ImportError:
+    from moviepy import ImageSequenceClip, VideoFileClip, concatenate_videoclips, clips_array
+# from moviepy.video.fx.all import crop
 import matplotlib.pyplot as plt
 from mGPT.utils.human_models import get_coord
 import pandas as pd
@@ -36,8 +39,8 @@ keys = ['smplx_root_pose',
         'smplx_expr'
     ]
 
-h2s_csl_mean = torch.load('../data/rzuo/CSL-Daily/mean.pt').cuda()
-h2s_csl_std = torch.load('../data/rzuo/CSL-Daily/std.pt').cuda()
+h2s_csl_mean = torch.load('./data/CSL-Daily/mean.pt').cuda()
+h2s_csl_std = torch.load('./data/CSL-Daily/std.pt').cuda()
 h2s_csl_mean = h2s_csl_mean[(3+3*11):]
 h2s_csl_mean = torch.cat([h2s_csl_mean[:-20], h2s_csl_mean[-10:]], dim=0)
 h2s_csl_std = h2s_csl_std[(3+3*11):]
@@ -198,8 +201,8 @@ def main(save_mesh=False):
     focal = [focal[0] / w * bbox[2], focal[1] / h * bbox[3]]
     princpt = [princpt[0] / w * bbox[2] + bbox[0], princpt[1] / h * bbox[3] + bbox[1]]
     cam_trans = np.array([-2.6177440e-03, 0.1, -13], dtype=np.float32)
-    save_dir = f'visualize/compare_{dataset}'
-    save_mesh_dir = f'visualize/compare_{dataset}'
+    save_dir = f'visualize/compare_{dataset}_handhandbody'
+    save_mesh_dir = f'visualize/compare_{dataset}_handhandbody'
     rot6d = cfg.DATASET.H2S.get('rot6d', False)
     os.makedirs(save_dir, exist_ok=True)
     if save_mesh:
@@ -207,14 +210,14 @@ def main(save_mesh=False):
 
     if dataset == 'csl':
         baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/CSL-Daily/csl-daily'
+        raw_vid_dir = './data/CSL-Daily/csl-daily'
     elif dataset == 'how2sign':
         baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/How2Sign/test/raw_videos'
+        raw_vid_dir = './data/How2Sign/test/raw_videos'
     elif dataset == 'phoenix':
-        baseline = 'results/mgpt/baseline'
-        raw_vid_dir = '../data/Phoenix_2014T/fullFrame-210x260px'
-    ours = 'results/mgpt/deto'
+        baseline = './data/Phoenix_2014T'
+        raw_vid_dir = '/aiarena/group/gmgroup/hongyq/data/PHOENIX/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/features/fullFrame-210x260px'
+    ours = 'results/signspark/SignSparK_handhandbody'
     split = 'test'
 
     scores_ours = {}
@@ -241,12 +244,24 @@ def main(save_mesh=False):
 
         n = names[i]
         print(i, n,)
-        for r in range(8):
-            dir = os.path.join(baseline, f'{split}_rank_{r}')
-            if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
-                with open(os.path.join(dir, f"{n.split('/')[-1]}.pkl"), 'rb') as f:
-                    res_base = pickle.load(f)
-                break
+        # for r in range(8):
+        #     dir = os.path.join(baseline, f'{split}_rank_{r}')
+        #     if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
+        #         with open(os.path.join(dir, f"{n.split('/')[-1]}.pkl"), 'rb') as f:
+        #             res_base = pickle.load(f)
+        #         break
+        dir = os.path.join(baseline, f"{split}/{n.split('/')[-1]}")
+        clip_poses = np.zeros([len(os.listdir(dir)), 179])
+        for idx, file in enumerate(sorted(os.listdir(dir))):
+            with open(os.path.join(dir, file), 'rb') as f:
+                poses = pickle.load(f)
+            pose = np.concatenate([poses[key] for key in keys], 0)
+            clip_poses[idx] = pose
+        clip_poses = clip_poses[:,(3+3*11):]
+        # remove shape
+        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        clip_poses = (clip_poses - h2s_csl_mean.detach().cpu().numpy()) / (h2s_csl_std.detach().cpu().numpy()+1e-10)
+        res_base = {'feats_rst': clip_poses.astype(np.float32)}
         for r in range(8):
             dir = os.path.join(ours, f'{split}_rank_{r}')
             if os.path.exists(dir) and f"{n.split('/')[-1]}.pkl" in os.listdir(dir):
@@ -284,7 +299,7 @@ def main(save_mesh=False):
             for frame in clip.iter_frames():
                 frame = Image.fromarray(frame, 'RGB')
                 gt_frames.append(frame)
-            csv = pd.read_csv('../data/How2Sign/test/re_aligned/how2sign_realigned_test_preprocessed_fps.csv')
+            csv = pd.read_csv('./data/How2Sign/test/re_aligned/how2sign_realigned_test_preprocessed_fps.csv')
             raw_fps = csv[csv['SENTENCE_NAME']==n]['fps'].item()
             if raw_fps > 25:
                 gt_frames = sample(gt_frames, count=int(25*len(gt_frames)/raw_fps))

@@ -128,6 +128,9 @@ class BaseModel(LightningModule):
         elif 'vae' in self.hparams.stage:
             with open(os.path.join(save_dir, 'test_scores.json'), 'w') as f:
                 json.dump(getattr(self.metrics.MRMetrics, 'name2scores'), f)
+        elif 'signspark' in self.hparams.stage or 'flow_matching' in self.hparams.stage:
+            with open(os.path.join(save_dir, 'test_scores.json'), 'w') as f:
+                json.dump(getattr(self.metrics.TM2TMetrics, 'name2scores'), f)
         
         self.rep_i = self.rep_i + 1
         # Free up the memory

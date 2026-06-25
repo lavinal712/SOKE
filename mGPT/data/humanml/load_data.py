@@ -2,7 +2,9 @@ import pickle
 import numpy as np
 import os
 import math
+import torch
 from bisect import bisect_left, bisect_right
+from mGPT.utils.rotation_conversions import axis_angle_to_matrix, matrix_to_rotation_6d
 
 keys = ['smplx_root_pose', 
         'smplx_body_pose', 
@@ -13,8 +15,39 @@ keys = ['smplx_root_pose',
         'smplx_expr'
     ]
 
+AXIS_ANGLE_NFEATS = 133
+ROT6D_BODY_JOINTS = (8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+ROT6D_NFEATS = (len(ROT6D_BODY_JOINTS) + 15 + 15) * 6
 
-def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+
+def hand_feature_slice(pose_rep="axis_angle"):
+    pose_rep = str(pose_rep or "axis_angle").lower()
+    if pose_rep in ["rot6d", "rotation6d", "6d", "6drot"]:
+        return slice(len(ROT6D_BODY_JOINTS) * 6, ROT6D_NFEATS)
+    if pose_rep in ["axis_angle", "axis-angle", "aa"]:
+        return slice(30, 120)
+    raise ValueError(f"Unsupported pose representation: {pose_rep}")
+
+
+def convert_pose_features(clip_poses, pose_rep="axis_angle"):
+    pose_rep = str(pose_rep or "axis_angle").lower()
+    if pose_rep in ["rot6d", "rotation6d", "6d", "6drot"]:
+        body = clip_poses[:, 3:66].reshape(len(clip_poses), 21, 3)
+        left_hand = clip_poses[:, 66:111].reshape(len(clip_poses), 15, 3)
+        right_hand = clip_poses[:, 111:156].reshape(len(clip_poses), 15, 3)
+        axis_angle = np.concatenate([body[:, ROT6D_BODY_JOINTS], left_hand, right_hand], axis=1)
+        with torch.no_grad():
+            rotations = torch.from_numpy(axis_angle).float()
+            rot6d = matrix_to_rotation_6d(axis_angle_to_matrix(rotations))
+        return rot6d.reshape(len(clip_poses), -1).cpu().numpy()
+
+    if pose_rep not in ["axis_angle", "axis-angle", "aa"]:
+        raise ValueError(f"Unsupported pose representation: {pose_rep}")
+    clip_poses = clip_poses[:, (3 + 3 * 11):]
+    return np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1)
+
+
+def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle", handfix=False):
     name = ann['name']
     if 'split' in ann:
         split = ann['split']
@@ -56,10 +89,9 @@ def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
         # TODO: Completely detele those poses 
         # clip_poses[:, 3: (3 +3*12)] = 0. 
         # clip_poses = np.concatenate((clip_poses[:,:3], clip_poses[:,(3+3*12):]), axis=1)
-        # remove lower body joints
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        if handfix:
+            clip_poses[:, 66:156] = 0.0
+        clip_poses = convert_pose_features(clip_poses, pose_rep)
     
     code = None
     if need_code:
@@ -73,7 +105,7 @@ def load_h2s_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
     return clip_poses, clip_text, name, code
 
 
-def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle", handfix=False):
     clip_text = ann['text']
     name = ann['name']
     frame_list = sorted(os.listdir(os.path.join(data_dir, 'poses', name)))
@@ -90,9 +122,9 @@ def load_csl_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
             pose = np.concatenate([poses[key] for key in keys], 0)
             clip_poses[frame_id] = pose
 
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        if handfix:
+            clip_poses[:, 66:156] = 0.0
+        clip_poses = convert_pose_features(clip_poses, pose_rep)
 
     code = None
     if need_code:
@@ -161,7 +193,7 @@ def load_iso_sample(ann, data_dir, need_pose=True, code_path=None, need_code=Fal
     return clip_poses, clip_text, name, code
 
 
-def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False, pose_rep="axis_angle", handfix=False):
     clip_text = ann['text']
     name = ann['name']
     frame_list = sorted(os.listdir(os.path.join(data_dir, name)))
@@ -178,9 +210,9 @@ def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code
             pose = np.concatenate([poses[key] for key in keys], 0)
             clip_poses[frame_id] = pose
 
-        clip_poses = clip_poses[:,(3+3*11):]
-        # remove shape
-        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+        if handfix:
+            clip_poses[:, 66:156] = 0.0
+        clip_poses = convert_pose_features(clip_poses, pose_rep)
 
     code = None
     if need_code:
